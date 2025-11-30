@@ -1,0 +1,413 @@
+/**
+ * Google Calendar API client.
+ */
+
+import { logger } from '../utils/logger.js';
+
+const GOOGLE_CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3';
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export interface CalendarListItem {
+  id: string;
+  summary: string;
+  description?: string;
+  primary?: boolean;
+  backgroundColor?: string;
+  foregroundColor?: string;
+  accessRole: 'owner' | 'writer' | 'reader' | 'freeBusyReader';
+  timeZone?: string;
+}
+
+export interface EventDateTime {
+  dateTime?: string;
+  date?: string;
+  timeZone?: string;
+}
+
+export interface EventAttendee {
+  email: string;
+  displayName?: string;
+  responseStatus?: 'needsAction' | 'declined' | 'tentative' | 'accepted';
+  optional?: boolean;
+  organizer?: boolean;
+  self?: boolean;
+}
+
+export interface EventReminder {
+  method: 'popup' | 'email';
+  minutes: number;
+}
+
+export interface ConferenceData {
+  createRequest?: {
+    requestId: string;
+    conferenceSolutionKey?: { type: string };
+    status?: { statusCode: string };
+  };
+  entryPoints?: Array<{
+    entryPointType: string;
+    uri: string;
+    label?: string;
+  }>;
+  conferenceSolution?: {
+    key: { type: string };
+    name: string;
+    iconUri?: string;
+  };
+  conferenceId?: string;
+}
+
+export interface CalendarEvent {
+  id: string;
+  summary?: string;
+  description?: string;
+  start?: EventDateTime;
+  end?: EventDateTime;
+  location?: string;
+  status?: 'confirmed' | 'tentative' | 'cancelled';
+  htmlLink?: string;
+  hangoutLink?: string;
+  conferenceData?: ConferenceData;
+  attendees?: EventAttendee[];
+  organizer?: { email: string; displayName?: string; self?: boolean };
+  creator?: { email: string; displayName?: string };
+  eventType?: 'default' | 'birthday' | 'focusTime' | 'fromGmail' | 'outOfOffice' | 'workingLocation';
+  visibility?: 'default' | 'public' | 'private' | 'confidential';
+  colorId?: string;
+  recurringEventId?: string;
+  recurrence?: string[];
+  reminders?: {
+    useDefault: boolean;
+    overrides?: EventReminder[];
+  };
+  created?: string;
+  updated?: string;
+}
+
+export interface FreeBusyResponse {
+  timeMin: string;
+  timeMax: string;
+  calendars: Record<string, {
+    busy: Array<{ start: string; end: string }>;
+    errors?: Array<{ domain: string; reason: string }>;
+  }>;
+}
+
+// ============================================================================
+// Request Parameters
+// ============================================================================
+
+export interface ListEventsParams {
+  calendarId?: string;
+  timeMin?: string;
+  timeMax?: string;
+  maxResults?: number;
+  singleEvents?: boolean;
+  orderBy?: 'startTime' | 'updated';
+  q?: string;
+  eventTypes?: string[];
+  pageToken?: string;
+  showDeleted?: boolean;
+}
+
+export interface CreateEventParams {
+  calendarId?: string;
+  summary: string;
+  description?: string;
+  start: EventDateTime;
+  end: EventDateTime;
+  location?: string;
+  attendees?: string[];
+  addGoogleMeet?: boolean;
+  recurrence?: string[];
+  reminders?: { useDefault: boolean; overrides?: EventReminder[] };
+  visibility?: 'default' | 'public' | 'private' | 'confidential';
+  colorId?: string;
+  sendUpdates?: 'all' | 'externalOnly' | 'none';
+}
+
+export interface QuickAddParams {
+  calendarId?: string;
+  text: string;
+  sendUpdates?: 'all' | 'externalOnly' | 'none';
+}
+
+export interface UpdateEventParams {
+  calendarId?: string;
+  eventId: string;
+  summary?: string;
+  description?: string;
+  start?: EventDateTime;
+  end?: EventDateTime;
+  location?: string;
+  attendees?: string[];
+  addGoogleMeet?: boolean;
+  recurrence?: string[];
+  reminders?: { useDefault: boolean; overrides?: EventReminder[] };
+  visibility?: 'default' | 'public' | 'private' | 'confidential';
+  colorId?: string;
+  sendUpdates?: 'all' | 'externalOnly' | 'none';
+}
+
+export interface MoveEventParams {
+  calendarId: string;
+  eventId: string;
+  destinationCalendarId: string;
+  sendUpdates?: 'all' | 'externalOnly' | 'none';
+}
+
+export interface DeleteEventParams {
+  calendarId?: string;
+  eventId: string;
+  sendUpdates?: 'all' | 'externalOnly' | 'none';
+}
+
+export interface FreeBusyParams {
+  timeMin: string;
+  timeMax: string;
+  calendarIds?: string[];
+  timeZone?: string;
+}
+
+// ============================================================================
+// Client
+// ============================================================================
+
+export class GoogleCalendarClient {
+  private accessToken: string;
+
+  constructor(accessToken: string) {
+    this.accessToken = accessToken;
+  }
+
+  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const url = `${GOOGLE_CALENDAR_API_BASE}${path}`;
+    const headers = {
+      Authorization: `Bearer ${this.accessToken}`,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    };
+
+    try {
+      const response = await fetch(url, { ...options, headers });
+
+      if (!response.ok) {
+        let errorMessage = `Google Calendar API error: ${response.status} ${response.statusText}`;
+        try {
+          const errorData = await response.json();
+          if (errorData.error?.message) {
+            errorMessage += ` - ${errorData.error.message}`;
+          }
+        } catch {
+          // Ignore JSON parse error
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Handle 204 No Content
+      if (response.status === 204) {
+        return {} as T;
+      }
+
+      return (await response.json()) as T;
+    } catch (error) {
+      logger.error('google-calendar-client', {
+        message: 'Request failed',
+        url,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Calendars
+  // --------------------------------------------------------------------------
+
+  async listCalendars(): Promise<{ items: CalendarListItem[] }> {
+    return this.request('/users/me/calendarList');
+  }
+
+  // --------------------------------------------------------------------------
+  // Events - List/Search
+  // --------------------------------------------------------------------------
+
+  async listEvents(params: ListEventsParams): Promise<{ items: CalendarEvent[]; nextPageToken?: string }> {
+    const calendarId = params.calendarId || 'primary';
+    const queryParams = new URLSearchParams();
+
+    if (params.timeMin) queryParams.set('timeMin', params.timeMin);
+    if (params.timeMax) queryParams.set('timeMax', params.timeMax);
+    if (params.maxResults) queryParams.set('maxResults', String(params.maxResults));
+    if (params.singleEvents !== undefined) queryParams.set('singleEvents', String(params.singleEvents));
+    if (params.orderBy) queryParams.set('orderBy', params.orderBy);
+    if (params.q) queryParams.set('q', params.q);
+    if (params.pageToken) queryParams.set('pageToken', params.pageToken);
+    if (params.showDeleted) queryParams.set('showDeleted', String(params.showDeleted));
+
+    // eventTypes can be repeated
+    if (params.eventTypes && params.eventTypes.length > 0) {
+      for (const et of params.eventTypes) {
+        queryParams.append('eventTypes', et);
+      }
+    }
+
+    const query = queryParams.toString();
+    const path = `/calendars/${encodeURIComponent(calendarId)}/events${query ? `?${query}` : ''}`;
+
+    return this.request(path);
+  }
+
+  // --------------------------------------------------------------------------
+  // Events - Create
+  // --------------------------------------------------------------------------
+
+  async createEvent(params: CreateEventParams): Promise<CalendarEvent> {
+    const calendarId = params.calendarId || 'primary';
+    const queryParams = new URLSearchParams();
+
+    if (params.sendUpdates) queryParams.set('sendUpdates', params.sendUpdates);
+    if (params.addGoogleMeet) queryParams.set('conferenceDataVersion', '1');
+
+    const body: Record<string, unknown> = {
+      summary: params.summary,
+      start: params.start,
+      end: params.end,
+    };
+
+    if (params.description) body.description = params.description;
+    if (params.location) body.location = params.location;
+    if (params.visibility) body.visibility = params.visibility;
+    if (params.colorId) body.colorId = params.colorId;
+    if (params.recurrence) body.recurrence = params.recurrence;
+    if (params.reminders) body.reminders = params.reminders;
+
+    if (params.attendees && params.attendees.length > 0) {
+      body.attendees = params.attendees.map((email) => ({ email }));
+    }
+
+    if (params.addGoogleMeet) {
+      body.conferenceData = {
+        createRequest: {
+          requestId: `meet-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          conferenceSolutionKey: { type: 'hangoutsMeet' },
+        },
+      };
+    }
+
+    const query = queryParams.toString();
+    const path = `/calendars/${encodeURIComponent(calendarId)}/events${query ? `?${query}` : ''}`;
+
+    return this.request(path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async quickAdd(params: QuickAddParams): Promise<CalendarEvent> {
+    const calendarId = params.calendarId || 'primary';
+    const queryParams = new URLSearchParams();
+
+    queryParams.set('text', params.text);
+    if (params.sendUpdates) queryParams.set('sendUpdates', params.sendUpdates);
+
+    const path = `/calendars/${encodeURIComponent(calendarId)}/events/quickAdd?${queryParams.toString()}`;
+
+    return this.request(path, { method: 'POST' });
+  }
+
+  // --------------------------------------------------------------------------
+  // Events - Update
+  // --------------------------------------------------------------------------
+
+  async updateEvent(params: UpdateEventParams): Promise<CalendarEvent> {
+    const calendarId = params.calendarId || 'primary';
+    const queryParams = new URLSearchParams();
+
+    if (params.sendUpdates) queryParams.set('sendUpdates', params.sendUpdates);
+    if (params.addGoogleMeet) queryParams.set('conferenceDataVersion', '1');
+
+    const body: Record<string, unknown> = {};
+
+    if (params.summary !== undefined) body.summary = params.summary;
+    if (params.description !== undefined) body.description = params.description;
+    if (params.start !== undefined) body.start = params.start;
+    if (params.end !== undefined) body.end = params.end;
+    if (params.location !== undefined) body.location = params.location;
+    if (params.visibility !== undefined) body.visibility = params.visibility;
+    if (params.colorId !== undefined) body.colorId = params.colorId;
+    if (params.recurrence !== undefined) body.recurrence = params.recurrence;
+    if (params.reminders !== undefined) body.reminders = params.reminders;
+
+    if (params.attendees !== undefined) {
+      body.attendees = params.attendees.map((email) => ({ email }));
+    }
+
+    if (params.addGoogleMeet) {
+      body.conferenceData = {
+        createRequest: {
+          requestId: `meet-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          conferenceSolutionKey: { type: 'hangoutsMeet' },
+        },
+      };
+    }
+
+    const query = queryParams.toString();
+    const path = `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(params.eventId)}${query ? `?${query}` : ''}`;
+
+    return this.request(path, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async moveEvent(params: MoveEventParams): Promise<CalendarEvent> {
+    const queryParams = new URLSearchParams();
+
+    queryParams.set('destination', params.destinationCalendarId);
+    if (params.sendUpdates) queryParams.set('sendUpdates', params.sendUpdates);
+
+    const path = `/calendars/${encodeURIComponent(params.calendarId)}/events/${encodeURIComponent(params.eventId)}/move?${queryParams.toString()}`;
+
+    return this.request(path, { method: 'POST' });
+  }
+
+  // --------------------------------------------------------------------------
+  // Events - Delete
+  // --------------------------------------------------------------------------
+
+  async deleteEvent(params: DeleteEventParams): Promise<void> {
+    const calendarId = params.calendarId || 'primary';
+    const queryParams = new URLSearchParams();
+
+    if (params.sendUpdates) queryParams.set('sendUpdates', params.sendUpdates);
+
+    const query = queryParams.toString();
+    const path = `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(params.eventId)}${query ? `?${query}` : ''}`;
+
+    await this.request(path, { method: 'DELETE' });
+  }
+
+  // --------------------------------------------------------------------------
+  // Free/Busy
+  // --------------------------------------------------------------------------
+
+  async getFreeBusy(params: FreeBusyParams): Promise<FreeBusyResponse> {
+    const calendarIds = params.calendarIds || ['primary'];
+
+    const body = {
+      timeMin: params.timeMin,
+      timeMax: params.timeMax,
+      timeZone: params.timeZone,
+      items: calendarIds.map((id) => ({ id })),
+    };
+
+    return this.request('/freeBusy', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+}
