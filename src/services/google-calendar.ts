@@ -165,6 +165,13 @@ export interface DeleteEventParams {
   sendUpdates?: 'all' | 'externalOnly' | 'none';
 }
 
+export interface RespondToEventParams {
+  calendarId?: string;
+  eventId: string;
+  response: 'accepted' | 'declined' | 'tentative';
+  sendUpdates?: 'all' | 'externalOnly' | 'none';
+}
+
 export interface FreeBusyParams {
   timeMin: string;
   timeMax: string;
@@ -197,7 +204,7 @@ export class GoogleCalendarClient {
       if (!response.ok) {
         let errorMessage = `Google Calendar API error: ${response.status} ${response.statusText}`;
         try {
-          const errorData = await response.json();
+          const errorData = (await response.json()) as { error?: { message?: string } };
           if (errorData.error?.message) {
             errorMessage += ` - ${errorData.error.message}`;
           }
@@ -229,6 +236,15 @@ export class GoogleCalendarClient {
 
   async listCalendars(): Promise<{ items: CalendarListItem[] }> {
     return this.request('/users/me/calendarList');
+  }
+
+  // --------------------------------------------------------------------------
+  // Events - Get Single
+  // --------------------------------------------------------------------------
+
+  async getEvent(calendarId: string, eventId: string): Promise<CalendarEvent> {
+    const path = `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
+    return this.request(path);
   }
 
   // --------------------------------------------------------------------------
@@ -389,6 +405,47 @@ export class GoogleCalendarClient {
     const path = `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(params.eventId)}${query ? `?${query}` : ''}`;
 
     await this.request(path, { method: 'DELETE' });
+  }
+
+  // --------------------------------------------------------------------------
+  // Events - Respond (Accept/Decline/Tentative)
+  // --------------------------------------------------------------------------
+
+  async respondToEvent(params: RespondToEventParams): Promise<CalendarEvent> {
+    const calendarId = params.calendarId || 'primary';
+    
+    // First, get the current event to find our attendee entry
+    const event = await this.getEvent(calendarId, params.eventId);
+    
+    if (!event.attendees || event.attendees.length === 0) {
+      throw new Error('This event has no attendees. You can only respond to events you were invited to.');
+    }
+    
+    // Find the self attendee
+    const selfAttendee = event.attendees.find(a => a.self);
+    if (!selfAttendee) {
+      throw new Error('You are not an attendee of this event. Cannot update response status.');
+    }
+    
+    // Update the attendee's response status
+    const updatedAttendees = event.attendees.map(a => {
+      if (a.self) {
+        return { ...a, responseStatus: params.response };
+      }
+      return a;
+    });
+    
+    // PATCH the event with updated attendees
+    const queryParams = new URLSearchParams();
+    if (params.sendUpdates) queryParams.set('sendUpdates', params.sendUpdates);
+    
+    const query = queryParams.toString();
+    const path = `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(params.eventId)}${query ? `?${query}` : ''}`;
+    
+    return this.request(path, {
+      method: 'PATCH',
+      body: JSON.stringify({ attendees: updatedAttendees }),
+    });
   }
 
   // --------------------------------------------------------------------------

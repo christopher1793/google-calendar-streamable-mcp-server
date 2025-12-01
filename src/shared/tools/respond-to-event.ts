@@ -1,0 +1,101 @@
+/**
+ * Respond to Event tool - accept, decline, or tentatively accept an event invitation.
+ */
+
+import { z } from 'zod';
+import { toolsMetadata } from '../../config/metadata.js';
+import { GoogleCalendarClient, type CalendarEvent } from '../../services/google-calendar.js';
+import { defineTool, type ToolResult } from './types.js';
+
+const InputSchema = z.object({
+  eventId: z.string().describe('Event ID to respond to'),
+  calendarId: z.string().optional().describe('Calendar ID (defaults to "primary")'),
+  response: z
+    .enum(['accepted', 'declined', 'tentative'])
+    .describe('Your response: "accepted" (yes), "declined" (no), or "tentative" (maybe)'),
+  sendUpdates: z.enum(['all', 'externalOnly', 'none']).optional().default('all'),
+});
+
+const RESPONSE_LABELS: Record<string, string> = {
+  accepted: 'accepted',
+  declined: 'declined',
+  tentative: 'marked as maybe',
+};
+
+function formatResponse(event: CalendarEvent, response: string): string {
+  const lines: string[] = [];
+
+  const title = event.summary || '(no title)';
+  const start = event.start?.dateTime || event.start?.date || 'no date';
+  const responseLabel = RESPONSE_LABELS[response] || response;
+
+  if (event.htmlLink) {
+    lines.push(`✓ You ${responseLabel}: [${title}](${event.htmlLink})`);
+  } else {
+    lines.push(`✓ You ${responseLabel}: ${title}`);
+  }
+
+  lines.push(`  when: ${start}`);
+
+  if (event.location) {
+    lines.push(`  location: ${event.location}`);
+  }
+
+  if (event.hangoutLink) {
+    lines.push(`  meet: ${event.hangoutLink}`);
+  }
+
+  return lines.join('\n');
+}
+
+export const respondToEventTool = defineTool({
+  name: toolsMetadata.respond_to_event.name,
+  title: toolsMetadata.respond_to_event.title,
+  description: toolsMetadata.respond_to_event.description,
+  inputSchema: InputSchema,
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+  },
+
+  handler: async (args, context): Promise<ToolResult> => {
+    const token = context.providerToken;
+
+    if (!token) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: 'Authentication required. Please authenticate with Google Calendar.' }],
+      };
+    }
+
+    const client = new GoogleCalendarClient(token);
+    const calendarId = args.calendarId || 'primary';
+
+    try {
+      const result = await client.respondToEvent({
+        calendarId,
+        eventId: args.eventId,
+        response: args.response,
+        sendUpdates: args.sendUpdates,
+      });
+
+      const text = formatResponse(result, args.response);
+
+      return {
+        content: [{ type: 'text', text }],
+        structuredContent: {
+          ok: true,
+          action: 'respond_to_event',
+          response: args.response,
+          event: result,
+        },
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: `Failed to respond to event: ${(error as Error).message}` }],
+      };
+    }
+  },
+});
+

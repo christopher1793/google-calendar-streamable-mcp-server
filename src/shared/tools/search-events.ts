@@ -1,13 +1,13 @@
 /**
- * Search Events tool - search and filter events with powerful options.
+ * Search Events tool - search and filter events across all calendars.
  */
 
 import { z } from 'zod';
 import { toolsMetadata } from '../../config/metadata.js';
-import { GoogleCalendarClient, type CalendarEvent } from '../../services/google-calendar.js';
+import { GoogleCalendarClient, type CalendarEvent, type CalendarListItem } from '../../services/google-calendar.js';
 import { defineTool, type ToolResult } from './types.js';
 
-const DEFAULT_FIELDS = ['id', 'summary', 'start', 'end', 'location', 'htmlLink', 'status'];
+const DEFAULT_FIELDS = ['id', 'summary', 'start', 'end', 'location', 'htmlLink', 'status', 'attendees', 'calendarId', 'calendarName'];
 
 const ALL_FIELDS = [
   'id',
@@ -28,43 +28,82 @@ const ALL_FIELDS = [
   'colorId',
   'recurringEventId',
   'recurrence',
+  'calendarId',
+  'calendarName',
 ];
 
+// Extended event type with calendar info
+interface EventWithCalendar extends CalendarEvent {
+  calendarId: string;
+  calendarName: string;
+}
+
 const InputSchema = z.object({
-  calendarId: z.string().optional().describe('Calendar ID (defaults to "primary")'),
+  calendarId: z
+    .union([
+      z.literal('all'),
+      z.string(),
+      z.array(z.string()),
+    ])
+    .optional()
+    .default('all')
+    .describe('Calendar ID(s) to search. Use "all" (default) to search all calendars, a single ID, or array of IDs'),
   timeMin: z.string().optional().describe('Start of time range (ISO 8601)'),
   timeMax: z.string().optional().describe('End of time range (ISO 8601)'),
   query: z.string().optional().describe('Text search (matches title, description, location, attendees)'),
-  maxResults: z.number().int().min(1).max(250).optional().default(50).describe('Max events to return'),
+  maxResults: z.number().int().min(1).max(250).optional().default(50).describe('Max events to return (total across all calendars)'),
   eventTypes: z
     .array(z.enum(['default', 'birthday', 'focusTime', 'outOfOffice', 'workingLocation']))
     .optional()
     .describe('Filter by event type'),
   orderBy: z.enum(['startTime', 'updated']).optional().describe('Sort order'),
-  pageToken: z.string().optional().describe('Token for pagination'),
+  pageToken: z.string().optional().describe('Token for pagination (only works with single calendar)'),
   fields: z.array(z.string()).optional().describe('Fields to include in response'),
   singleEvents: z.boolean().optional().default(true).describe('Expand recurring events into instances'),
 });
 
-function formatEventLine(event: CalendarEvent): string {
+function formatEventLine(event: EventWithCalendar): string {
   const start = event.start?.dateTime || event.start?.date || 'no date';
   const title = event.summary || '(no title)';
-  const status = event.status ? ` [${event.status}]` : '';
+  const calendar = event.calendarName ? ` (${event.calendarName})` : '';
+  
+  // Find user's own response status (self: true in attendees)
+  const selfAttendee = event.attendees?.find((a) => a.self);
+  let statusInfo = '';
+  
+  if (selfAttendee?.responseStatus) {
+    // Show user's response status: accepted, declined, tentative, needsAction
+    const responseMap: Record<string, string> = {
+      accepted: 'you: accepted',
+      declined: 'you: declined',
+      tentative: 'you: maybe',
+      needsAction: 'you: not responded',
+    };
+    statusInfo = ` [${responseMap[selfAttendee.responseStatus] || selfAttendee.responseStatus}]`;
+  } else if (event.status === 'cancelled') {
+    statusInfo = ' [cancelled]';
+  }
 
   if (event.htmlLink) {
-    return `- [${title}](${event.htmlLink}) — ${start}${status}`;
+    return `- [${title}](${event.htmlLink}) — ${start}${calendar}${statusInfo}`;
   }
-  return `- ${title} — ${start}${status}`;
+  return `- ${title} — ${start}${calendar}${statusInfo}`;
 }
 
-function pickFields(event: CalendarEvent, fields: string[]): Partial<CalendarEvent> {
+function pickFields(event: EventWithCalendar, fields: string[]): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const field of fields) {
     if (field in event) {
-      result[field] = (event as Record<string, unknown>)[field];
+      result[field] = (event as unknown as Record<string, unknown>)[field];
     }
   }
-  return result as Partial<CalendarEvent>;
+  return result;
+}
+
+function getEventStartTime(event: CalendarEvent): number {
+  const dateStr = event.start?.dateTime || event.start?.date;
+  if (!dateStr) return 0;
+  return new Date(dateStr).getTime();
 }
 
 export const searchEventsTool = defineTool({
@@ -90,30 +129,123 @@ export const searchEventsTool = defineTool({
     const client = new GoogleCalendarClient(token);
 
     try {
-      const result = await client.listEvents({
-        calendarId: args.calendarId,
-        timeMin: args.timeMin,
-        timeMax: args.timeMax,
-        maxResults: args.maxResults,
-        singleEvents: args.singleEvents,
-        orderBy: args.singleEvents ? (args.orderBy || 'startTime') : args.orderBy,
-        q: args.query,
-        eventTypes: args.eventTypes,
-        pageToken: args.pageToken,
+      // Determine which calendars to search
+      let calendarsToSearch: CalendarListItem[] = [];
+
+      if (args.calendarId === 'all') {
+        // Fetch all accessible calendars
+        const calendarList = await client.listCalendars();
+        calendarsToSearch = calendarList.items.filter(
+          // Include calendars where user can at least read events
+          (cal) => ['owner', 'writer', 'reader'].includes(cal.accessRole)
+        );
+      } else if (Array.isArray(args.calendarId)) {
+        // Use provided calendar IDs
+        calendarsToSearch = args.calendarId.map((id) => ({
+          id,
+          summary: id === 'primary' ? 'Primary' : id,
+          accessRole: 'reader' as const,
+        }));
+      } else {
+        // Single calendar ID
+        calendarsToSearch = [{
+          id: args.calendarId,
+          summary: args.calendarId === 'primary' ? 'Primary' : args.calendarId,
+          accessRole: 'reader' as const,
+        }];
+      }
+
+      // For pagination with single calendar
+      if (args.pageToken && calendarsToSearch.length !== 1) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: 'Pagination (pageToken) only works when searching a single calendar. Specify a calendarId to use pagination.' }],
+        };
+      }
+
+      // Search all calendars in parallel
+      const searchPromises = calendarsToSearch.map(async (calendar) => {
+        try {
+          const result = await client.listEvents({
+            calendarId: calendar.id,
+            timeMin: args.timeMin,
+            timeMax: args.timeMax,
+            maxResults: args.calendarId === 'all' 
+              ? Math.min(args.maxResults ?? 50, 100) // Cap per-calendar when searching all
+              : args.maxResults,
+            singleEvents: args.singleEvents,
+            orderBy: args.singleEvents ? (args.orderBy || 'startTime') : args.orderBy,
+            q: args.query,
+            eventTypes: args.eventTypes,
+            pageToken: args.pageToken,
+          });
+
+          // Add calendar info to each event
+          const eventsWithCalendar: EventWithCalendar[] = result.items.map((event) => ({
+            ...event,
+            calendarId: calendar.id,
+            calendarName: calendar.summary,
+          }));
+
+          return {
+            calendar,
+            events: eventsWithCalendar,
+            nextPageToken: result.nextPageToken,
+          };
+        } catch (error) {
+          // Log error but don't fail the whole search
+          console.warn(`Failed to search calendar ${calendar.id}: ${(error as Error).message}`);
+          return {
+            calendar,
+            events: [],
+            error: (error as Error).message,
+          };
+        }
       });
 
+      const results = await Promise.all(searchPromises);
+
+      // Merge all events and sort by start time
+      let allEvents: EventWithCalendar[] = results.flatMap((r) => r.events);
+      
+      // Sort by start time if using startTime ordering
+      if (args.singleEvents !== false && (args.orderBy === 'startTime' || !args.orderBy)) {
+        allEvents.sort((a, b) => getEventStartTime(a) - getEventStartTime(b));
+      }
+
+      // Apply total maxResults limit
+      const maxResults = args.maxResults ?? 50;
+      const hasMore = allEvents.length > maxResults;
+      allEvents = allEvents.slice(0, maxResults);
+
       const fields = args.fields && args.fields.length > 0 ? args.fields : DEFAULT_FIELDS;
-      const filteredItems = result.items.map((event) => pickFields(event, fields));
+      const filteredItems = allEvents.map((event) => pickFields(event, fields));
 
       // Format for LLM consumption
       const lines: string[] = [];
 
-      if (result.items.length === 0) {
+      // Show which calendars were searched
+      const searchedCalendars = results
+        .filter((r) => !r.error)
+        .map((r) => r.calendar.summary);
+      const failedCalendars = results
+        .filter((r) => r.error)
+        .map((r) => r.calendar.summary);
+
+      if (args.calendarId === 'all' && searchedCalendars.length > 1) {
+        lines.push(`Searched ${searchedCalendars.length} calendar(s): ${searchedCalendars.join(', ')}`);
+        if (failedCalendars.length > 0) {
+          lines.push(`(Failed to search: ${failedCalendars.join(', ')})`);
+        }
+        lines.push('');
+      }
+
+      if (allEvents.length === 0) {
         lines.push('No events found matching the criteria.');
       } else {
-        lines.push(`Found ${result.items.length} event(s):\n`);
+        lines.push(`Found ${allEvents.length} event(s)${hasMore ? ' (more available)' : ''}:\n`);
 
-        for (const event of result.items) {
+        for (const event of allEvents) {
           lines.push(formatEventLine(event));
 
           if (event.location) {
@@ -130,17 +262,22 @@ export const searchEventsTool = defineTool({
         }
       }
 
-      if (result.nextPageToken) {
-        lines.push(`\nMore results available. Pass pageToken: "${result.nextPageToken}" to fetch next page.`);
+      // Only show nextPageToken for single calendar searches
+      const singleCalendarResult = calendarsToSearch.length === 1 ? results[0] : null;
+      if (singleCalendarResult?.nextPageToken) {
+        lines.push(`\nMore results available. Pass pageToken: "${singleCalendarResult.nextPageToken}" to fetch next page.`);
+      } else if (hasMore) {
+        lines.push(`\nMore results available. Increase maxResults or narrow your time range.`);
       }
 
-      lines.push("\nNext: Use eventId with 'update_event' or 'delete_event'.");
+      lines.push("\nNote: Use the calendarId from results when calling 'update_event' or 'delete_event'.");
 
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
         structuredContent: {
           items: filteredItems,
-          nextPageToken: result.nextPageToken,
+          calendarsSearched: searchedCalendars,
+          nextPageToken: singleCalendarResult?.nextPageToken,
         },
       };
     } catch (error) {
@@ -151,5 +288,3 @@ export const searchEventsTool = defineTool({
     }
   },
 });
-
-

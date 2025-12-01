@@ -30,6 +30,7 @@ import { checkAvailabilityTool } from './check-availability.js';
 import { createEventTool } from './create-event.js';
 import { updateEventTool } from './update-event.js';
 import { deleteEventTool } from './delete-event.js';
+import { respondToEventTool } from './respond-to-event.js';
 
 /**
  * All shared tools available in both runtimes.
@@ -42,6 +43,7 @@ export const sharedTools: RegisteredTool[] = [
   createEventTool as unknown as RegisteredTool,
   updateEventTool as unknown as RegisteredTool,
   deleteEventTool as unknown as RegisteredTool,
+  respondToEventTool as unknown as RegisteredTool,
 ];
 
 /**

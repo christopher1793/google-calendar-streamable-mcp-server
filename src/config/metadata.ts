@@ -13,14 +13,16 @@ export const serverMetadata = {
   instructions: `Use these tools to manage Google Calendar events.
 
 Quick start
-- Call 'list_calendars' first to discover available calendars and their IDs.
-- Use 'search_events' to find events by time range, text query, or event type.
+- Use 'search_events' to find events — it searches ALL calendars by default!
 - Use 'create_event' to add events (natural language or structured).
 - Use 'update_event' to modify or move events.
+- Use 'respond_to_event' to accept, decline, or tentatively accept invitations.
 - Use 'check_availability' before scheduling to find free slots.
+- Call 'list_calendars' to see all available calendars if needed.
 
 Default behavior
-- All tools default to 'primary' calendar if calendarId is omitted.
+- 'search_events' searches ALL calendars by default and shows which calendar each event belongs to.
+- Other tools default to 'primary' calendar if calendarId is omitted.
 - 'sendUpdates' defaults to 'none' to avoid spamming attendees during agent operations.
 - Date/time values use ISO 8601 format with timezone offset (e.g., 2024-12-01T14:00:00+01:00).
 - For all-day events, use date format: 2024-12-01.
@@ -54,7 +56,14 @@ export const toolsMetadata = {
   search_events: {
     name: 'search_events',
     title: 'Search Events',
-    description: `Search and filter events with powerful options. Use for both discovery and precise lookups. Inputs: calendarId? (default: 'primary'), timeMin?, timeMax? (ISO 8601), query? (searches title, description, location, attendees), maxResults? (default: 50), eventTypes? (default|birthday|focusTime|outOfOffice|workingLocation), orderBy? (startTime|updated), fields? (array of fields to return).
+    description: `Search events across ALL calendars by default. Returns merged results sorted by start time.
+
+Inputs: calendarId? (default: 'all' = searches all accessible calendars; can also be a single calendar ID or array of IDs), timeMin?, timeMax? (ISO 8601), query? (searches title, description, location, attendees), maxResults? (default: 50, total across all calendars), eventTypes? (default|birthday|focusTime|outOfOffice|workingLocation), orderBy? (startTime|updated), fields? (array of fields to return).
+
+CALENDAR SEARCH:
+- Default ('all'): Searches ALL accessible calendars in parallel.
+- Single calendar: calendarId: 'primary' or specific calendar ID.
+- Multiple calendars: calendarId: ['primary', 'work@group.calendar.google.com'].
 
 FILTERING BY TIME (important!):
 - Today's events: timeMin=start of day, timeMax=end of day in user's timezone.
@@ -68,11 +77,10 @@ FILTERING BY TYPE:
 
 Text search: pass query: "meeting with John" to match title, description, location, or attendee names/emails.
 
-Returns: { items: Array<{ id, summary, start, end, location?, htmlLink, status, ... }>, nextPageToken? }.
-Default fields: id, summary, start, end, location, htmlLink, status.
-All fields: id, summary, description, start, end, location, attendees, organizer, creator, htmlLink, hangoutLink, conferenceData, status, eventType, visibility, colorId, recurringEventId, recurrence.
+Returns: { items: Array<{ id, summary, start, end, calendarId, calendarName, location?, htmlLink, status, ... }>, calendarsSearched, nextPageToken? }.
+IMPORTANT: Each event includes 'calendarId' and 'calendarName' showing which calendar it belongs to.
 
-Next: Use eventId with 'update_event' or 'delete_event'. Pass nextPageToken as pageToken to fetch more results.`,
+Next: Use eventId AND calendarId with 'update_event' or 'delete_event'. Pagination only works with single calendar searches.`,
   },
 
   check_availability: {
@@ -134,6 +142,27 @@ Next: Use 'search_events' to verify changes. Share updated htmlLink if needed.`,
     title: 'Delete Event',
     description:
       "Delete an event from a calendar. Inputs: eventId (required), calendarId? (default: 'primary'), sendUpdates? ('all'|'externalOnly'|'none', default: 'none').\nBehavior: Permanently removes the event. If it's a recurring event instance, only that instance is deleted. To delete all instances, delete the parent event (use recurringEventId).\nReturns: { success: true }.\nNext: Use 'search_events' to verify deletion.",
+  },
+
+  respond_to_event: {
+    name: 'respond_to_event',
+    title: 'Respond to Event',
+    description: `Accept, decline, or tentatively accept an event invitation.
+
+Inputs:
+- eventId: string (required) — Event ID from search_events
+- calendarId?: string (default: 'primary') — Calendar where the event appears
+- response: 'accepted' | 'declined' | 'tentative' (required)
+  - 'accepted' = Yes, I'll attend
+  - 'declined' = No, I won't attend  
+  - 'tentative' = Maybe
+- sendUpdates?: 'all' | 'externalOnly' | 'none' (default: 'all')
+
+Behavior: Updates YOUR attendance status for the event. You must be an attendee (invited) to respond.
+
+Returns: Updated event object with your new response status.
+
+Note: This only works for events you were invited to. For events you created yourself, you are the organizer, not an attendee.`,
   },
 } as const satisfies Record<string, ToolMetadata>;
 

@@ -19,7 +19,7 @@ For production Cloudflare deployments, see [Remote Model Context Protocol server
 
 ## Features
 
-- ✅ **Events** — List, search, create, update, delete calendar events
+- ✅ **Events** — Search across ALL calendars, create, update, delete, respond to invitations
 - ✅ **Calendars** — Discover available calendars
 - ✅ **Availability** — Check free/busy status before scheduling
 - ✅ **Natural Language** — Create events with text like "Lunch tomorrow at noon"
@@ -30,9 +30,9 @@ For production Cloudflare deployments, see [Remote Model Context Protocol server
 ### Design Principles
 
 - **LLM-friendly**: Tools are simplified and unified, not 1:1 API mirrors
-- **Smart defaults**: Primary calendar, no notification spam, recurring expansion
-- **Discovery-first**: `list_calendars` returns all IDs needed for subsequent calls
-- **Clear feedback**: Every response includes human-readable summaries
+- **Smart defaults**: Search all calendars, no notification spam, recurring expansion
+- **Just works**: `search_events` searches all calendars by default — no setup needed
+- **Clear feedback**: Every response includes which calendar each event belongs to
 - **Limited features**: Due to the model's hallucinations, tools for managing calendars are not included. Ensure that you use the client that allows you to confirm dangerous actions, such as event deletion or updating.
 
 ---
@@ -286,7 +286,7 @@ bunx @modelcontextprotocol/inspector
 
 ### `list_calendars`
 
-Discover available calendars and their IDs. **Call this first** when you don't know calendar IDs.
+Discover available calendars and their IDs. Usually not needed since `search_events` searches all calendars by default.
 
 ```ts
 // Input
@@ -303,31 +303,36 @@ Discover available calendars and their IDs. **Call this first** when you don't k
 
 ### `search_events`
 
-Search and filter events with powerful options.
+Search events across **all calendars by default**. Returns merged results sorted by start time.
 
 ```ts
 // Input
 {
-  calendarId?: string;       // Default: "primary"
+  calendarId?: string | string[];  // Default: "all" (searches ALL calendars)
+                                   // Can be: "all", single ID, or array of IDs
   timeMin?: string;          // ISO 8601
   timeMax?: string;          // ISO 8601
   query?: string;            // Text search
-  maxResults?: number;       // Default: 50
+  maxResults?: number;       // Default: 50 (total across all calendars)
   eventTypes?: string[];     // default, birthday, focusTime, outOfOffice
   orderBy?: "startTime" | "updated";
   fields?: string[];         // Control output verbosity
-  pageToken?: string;        // Pagination
+  pageToken?: string;        // Pagination (single calendar only)
 }
 
 // Output
 {
   items: Array<{
     id, summary, start, end, location?,
+    calendarId, calendarName,  // NEW: which calendar this event belongs to
     htmlLink, status, attendees?, hangoutLink?
   }>;
+  calendarsSearched: string[];  // List of calendars that were searched
   nextPageToken?: string;
 }
 ```
+
+> **Note:** Each event includes `calendarId` and `calendarName` so you know which calendar it belongs to. Use this `calendarId` when calling `update_event` or `delete_event`.
 
 ### `check_availability`
 
@@ -411,15 +416,36 @@ Remove an event from calendar.
 }
 ```
 
+### `respond_to_event`
+
+Accept, decline, or tentatively accept an event invitation.
+
+```ts
+// Input
+{
+  eventId: string;           // Required
+  calendarId?: string;       // Default: "primary"
+  response: "accepted" | "declined" | "tentative";  // Required
+  sendUpdates?: "all" | "externalOnly" | "none";    // Default: "all"
+}
+
+// Output
+{
+  ok: true,
+  response: "accepted",  // Your response
+  event: { ... }         // Updated event
+}
+```
+
+> **Note:** Only works for events you were invited to. For events you created, you are the organizer, not an attendee.
+
 ---
 
 ## Examples
 
-### 1. List today's events
+### 1. List today's events (searches all calendars)
 
 ```json
-{ "name": "list_calendars", "arguments": {} }
-
 {
   "name": "search_events",
   "arguments": {
@@ -428,6 +454,8 @@ Remove an event from calendar.
   }
 }
 ```
+
+> No need to call `list_calendars` first — `search_events` searches all accessible calendars by default and shows which calendar each event belongs to.
 
 ### 2. Create event with Google Meet
 
