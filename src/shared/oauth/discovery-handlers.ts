@@ -42,7 +42,8 @@ export function createDiscoveryHandlers(
       });
     },
     protectedResourceMetadata: (requestUrl: URL, sid?: string) => {
-      const resourceBase = strategy.resolveResourceBaseUrl(requestUrl, config);
+      const resourceBase =
+        config.AUTH_RESOURCE_URI || strategy.resolveResourceBaseUrl(requestUrl, config);
       const authorizationServerUrl =
         config.AUTH_DISCOVERY_URL ||
         strategy.resolveAuthorizationServerUrl(requestUrl, config);
