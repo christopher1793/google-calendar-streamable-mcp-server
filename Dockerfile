@@ -1,10 +1,12 @@
-FROM oven/bun:1-alpine
+FROM node:22-slim
 
 WORKDIR /app
 
-# Copy package files and install dependencies
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+# Copy package files
+COPY package.json package-lock.json ./
+
+# Install dependencies
+RUN npm ci
 
 # Copy source
 COPY src/ ./src/
@@ -15,5 +17,5 @@ RUN mkdir -p .data
 
 EXPOSE 3000 3001
 
-# Use Bun to run TypeScript directly
-CMD ["bun", "run", "src/index.ts"]
+# Run with tsx
+CMD ["npx", "tsx", "src/index.ts"]
