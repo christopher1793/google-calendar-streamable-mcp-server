@@ -17,5 +17,5 @@ RUN mkdir -p .data
 
 EXPOSE 3000 3001
 
-# Use tsx to run TypeScript directly
-CMD ["./node_modules/.bin/tsx", "src/index.ts"]
+# Use tsx to run TypeScript (ESM mode)
+CMD ["node", "--import", "tsx/esm", "src/index.ts"]
