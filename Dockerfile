@@ -1,16 +1,21 @@
-FROM oven/bun:1-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package.json bun.lock ./
+# Copy package files
+COPY package.json package-lock.json ./
 
-RUN bun install --frozen-lockfile --production
+# Install dependencies
+RUN npm ci
 
+# Copy source
 COPY src/ ./src/
 COPY tsconfig.json ./
 
+# Create data directory for token storage
 RUN mkdir -p .data
 
 EXPOSE 3000 3001
 
-CMD ["bun", "run", "src/index.ts"]
+# Use tsx to run TypeScript
+CMD ["npx", "tsx", "src/index.ts"]
