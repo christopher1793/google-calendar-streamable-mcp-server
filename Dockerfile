@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:22-slim
 
 WORKDIR /app
 
@@ -17,5 +17,5 @@ RUN mkdir -p .data
 
 EXPOSE 3000 3001
 
-# Use tsx to run TypeScript (explicit path for Alpine)
+# Use tsx to run TypeScript directly
 CMD ["./node_modules/.bin/tsx", "src/index.ts"]
