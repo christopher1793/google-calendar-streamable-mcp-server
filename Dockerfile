@@ -17,5 +17,5 @@ RUN mkdir -p .data
 
 EXPOSE 3000 3001
 
-# Use tsx to run TypeScript
-CMD ["npx", "tsx", "src/index.ts"]
+# Use tsx to run TypeScript (explicit path for Alpine)
+CMD ["./node_modules/.bin/tsx", "src/index.ts"]
